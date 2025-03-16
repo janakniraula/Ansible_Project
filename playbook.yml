@@ -1,0 +1,166 @@
+---
+- name: Provision EC2 instance and configure NGINX with SSL and Website
+  hosts: localhost
+  connection: local
+  gather_facts: no
+  vars:
+    key_name: my-ec2
+    region: us-east-1
+    instance_type: t2.micro
+    image_id: ami-0fc5d935ebf8bc3bc # Ubuntu 22.04 LTS
+    security_group: my-ec2-sg
+    public_key_file: ~/.ssh/my-ec2.pub
+    private_key_file: ~/.ssh/my-ec2.pem
+
+  tasks:
+    - name: Generate SSH key pair
+      community.crypto.openssh_keypair:
+        path: "{{ public_key_file | regex_replace('.pub$', '') }}"
+        type: rsa
+        size: 2048
+      register: ssh_key_result
+      ignore_errors: true
+
+    - name: Create security group
+      amazon.aws.ec2_group:
+        name: "{{ security_group }}"
+        description: "Allow SSH, HTTP, HTTPS"
+        region: "{{ region }}"
+        rules:
+          - proto: tcp
+            ports:
+              - 22
+              - 80
+              - 443
+            cidr_ip: 0.0.0.0/0
+      register: sg_result
+
+    - name: Launch EC2 instance
+      amazon.aws.ec2_instance:
+        key_name: "{{ key_name }}"
+        instance_type: "{{ instance_type }}"
+        image_id: "{{ image_id }}"
+        wait: yes
+        region: "{{ region }}"
+        security_groups:
+          - "{{ security_group }}"
+        count: 1
+      register: ec2
+
+    - name: Wait for SSH to come up
+      ansible.builtin.wait_for:
+        host: "{{ ec2.instances[0].public_ip_address }}"
+        port: 22
+        delay: 30
+        timeout: 300
+        state: started
+
+    - name: Add new host to inventory
+      add_host:
+        name: ec2_instance
+        ansible_host: "{{ ec2.instances[0].public_ip_address }}"
+        ansible_user: ubuntu
+        ansible_ssh_private_key_file: "{{ private_key_file }}"
+        ansible_ssh_common_args: '-o StrictHostKeyChecking=no'
+
+- name: Configure NGINX, SSL, and Website on Ubuntu
+  hosts: ec2_instance
+  become: yes
+  tasks:
+    - name: Update system packages
+      apt:
+        update_cache: yes
+        upgrade: yes
+
+    - name: Install NGINX and OpenSSL
+      apt:
+        name:
+          - nginx
+          - openssl
+        state: present
+
+    - name: Create directories for web pages
+      file:
+        path: "/var/www/{{ item }}"
+        state: directory
+        owner: www-data
+        group: www-data
+        mode: '0755'
+      loop:
+        - page1
+        - page2
+
+    - name: Create Page 1 content
+      copy:
+        dest: /var/www/page1/index.html
+        content: "<h1>This is Page 1!</h1>"
+        owner: www-data
+        group: www-data
+        mode: '0644'
+
+    - name: Create Page 2 content
+      copy:
+        dest: /var/www/page2/index.html
+        content: "<h1>This is Page 2!</h1>"
+        owner: www-data
+        group: www-data
+        mode: '0644'
+
+    - name: Generate SSL Certificates
+      command: >
+        openssl req -x509 -nodes -days 365
+        -subj "/C=US/ST=State/L=City/O=Org/CN=example.com"
+        -newkey rsa:2048
+        -keyout /etc/ssl/private/nginx-selfsigned.key
+        -out /etc/ssl/certs/nginx-selfsigned.crt
+      args:
+        creates: /etc/ssl/certs/nginx-selfsigned.crt
+
+    - name: Configure NGINX to serve /page1 and /page2
+      copy:
+        dest: /etc/nginx/sites-available/default
+        content: |
+          server {
+              listen 80 default_server;
+              listen [::]:80 default_server;
+
+              listen 443 ssl default_server;
+              listen [::]:443 ssl default_server;
+              ssl_certificate /etc/ssl/certs/nginx-selfsigned.crt;
+              ssl_certificate_key /etc/ssl/private/nginx-selfsigned.key;
+
+              server_name _;
+
+              location /page1/ {
+                  root /var/www;
+                  index index.html;
+              }
+
+              location /page2/ {
+                  root /var/www;
+                  index index.html;
+              }
+
+              location / {
+                  return 301 /page1/;
+              }
+          }
+      notify: restart nginx
+
+    - name: Ensure nginx is enabled and running
+      service:
+        name: nginx
+        state: started
+        enabled: yes
+
+  handlers:
+    - name: restart nginx
+      service:
+        name: nginx
+        state: restarted
+
+- name: Display EC2 Public IP
+  hosts: localhost
+  tasks:
+    - debug:
+        msg: "Your EC2 instance is up and running at https://{{ hostvars['ec2_instance']['ansible_host'] }}/page1 and /page2"
