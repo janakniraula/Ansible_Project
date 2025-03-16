@@ -28,10 +28,7 @@
         region: "{{ region }}"
         rules:
           - proto: tcp
-            ports:
-              - 22
-              - 80
-              - 443
+            ports: ["22", "80", "443"]
             cidr_ip: 0.0.0.0/0
       register: sg_result
 
@@ -46,6 +43,13 @@
           - "{{ security_group }}"
         count: 1
       register: ec2
+
+    - name: Tag EC2 instance
+      amazon.aws.ec2_tag:
+        resource: "{{ ec2.instances[0].instance_id }}"
+        region: "{{ region }}"
+        tags:
+          Name: MyTargetEc2Instance
 
     - name: Wait for SSH to come up
       ansible.builtin.wait_for:
@@ -163,4 +167,4 @@
   hosts: localhost
   tasks:
     - debug:
-        msg: "Your EC2 instance is up and running at https://{{ hostvars['ec2_instance']['ansible_host'] }}/page1 and /page2"
+        msg: "Your EC2 instance is up and running at https://{{ hostvars['ec2_instance']['ansible_host'] }}/page1 and https://{{ hostvars['ec2_instance']['ansible_host'] }}/page2"
