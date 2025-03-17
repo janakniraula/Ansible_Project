@@ -3,16 +3,18 @@
   hosts: localhost
   connection: local
   gather_facts: no
+  # AWS and SSH variables
   vars:
     key_name: my-ec2
     region: us-east-1
     instance_type: t2.micro
-    image_id: ami-0fc5d935ebf8bc3bc # Ubuntu 22.04 LTS
+    image_id: ami-0fc5d935ebf8bc3bc
     security_group: my-ec2-sg
     public_key_file: ~/.ssh/my-ec2.pub
     private_key_file: ~/.ssh/my-ec2.pem
 
   tasks:
+    # Generate an SSH key pair if it doesn't exist
     - name: Generate SSH key pair
       community.crypto.openssh_keypair:
         path: "{{ public_key_file | regex_replace('.pub$', '') }}"
@@ -21,6 +23,7 @@
       register: ssh_key_result
       ignore_errors: true
 
+    # Create a security group with rules for SSH, HTTP, HTTPS
     - name: Create security group
       amazon.aws.ec2_group:
         name: "{{ security_group }}"
@@ -32,25 +35,22 @@
             cidr_ip: 0.0.0.0/0
       register: sg_result
 
+    # Launch EC2 instance with the above security group and SSH key + Name tag
     - name: Launch EC2 instance
       amazon.aws.ec2_instance:
         key_name: "{{ key_name }}"
         instance_type: "{{ instance_type }}"
         image_id: "{{ image_id }}"
-        wait: yes
+        wait: "yes"
         region: "{{ region }}"
         security_groups:
           - "{{ security_group }}"
         count: 1
+        tags:
+          Name: my-ec2
       register: ec2
 
-    - name: Tag EC2 instance
-      amazon.aws.ec2_tag:
-        resource: "{{ ec2.instances[0].instance_id }}"
-        region: "{{ region }}"
-        tags:
-          Name: MyTargetEc2Instance
-
+    # Wait for the instance SSH port to be available
     - name: Wait for SSH to come up
       ansible.builtin.wait_for:
         host: "{{ ec2.instances[0].public_ip_address }}"
@@ -59,6 +59,7 @@
         timeout: 300
         state: started
 
+    # Dynamically add the new EC2 instance to the inventory
     - name: Add new host to inventory
       add_host:
         name: ec2_instance
@@ -67,15 +68,17 @@
         ansible_ssh_private_key_file: "{{ private_key_file }}"
         ansible_ssh_common_args: '-o StrictHostKeyChecking=no'
 
-- name: Configure NGINX, SSL, and Website on Ubuntu
+- name: Configure NGINX, SSL, and Website on Ubuntu EC2
   hosts: ec2_instance
   become: yes
   tasks:
+    # Update system packages
     - name: Update system packages
       apt:
         update_cache: yes
         upgrade: yes
 
+    # Install NGINX and OpenSSL
     - name: Install NGINX and OpenSSL
       apt:
         name:
@@ -83,6 +86,7 @@
           - openssl
         state: present
 
+    # Create web directories for page1 and page2
     - name: Create directories for web pages
       file:
         path: "/var/www/{{ item }}"
@@ -94,22 +98,25 @@
         - page1
         - page2
 
-    - name: Create Page 1 content
+    # Deploy page1.html
+    - name: Deploy Page 1 content
       copy:
+        src: ./page1.html
         dest: /var/www/page1/index.html
-        content: "<h1>This is Page 1!</h1>"
         owner: www-data
         group: www-data
         mode: '0644'
 
-    - name: Create Page 2 content
+    # Deploy page2.html
+    - name: Deploy Page 2 content
       copy:
+        src: ./page2.html
         dest: /var/www/page2/index.html
-        content: "<h1>This is Page 2!</h1>"
         owner: www-data
         group: www-data
         mode: '0644'
 
+    # Generate self-signed SSL certificates
     - name: Generate SSL Certificates
       command: >
         openssl req -x509 -nodes -days 365
@@ -120,37 +127,14 @@
       args:
         creates: /etc/ssl/certs/nginx-selfsigned.crt
 
-    - name: Configure NGINX to serve /page1 and /page2
-      copy:
+    # Apply NGINX configuration from Jinja2 template
+    - name: Configure NGINX using template
+      template:
+        src: ./nginx.conf.j2
         dest: /etc/nginx/sites-available/default
-        content: |
-          server {
-              listen 80 default_server;
-              listen [::]:80 default_server;
-
-              listen 443 ssl default_server;
-              listen [::]:443 ssl default_server;
-              ssl_certificate /etc/ssl/certs/nginx-selfsigned.crt;
-              ssl_certificate_key /etc/ssl/private/nginx-selfsigned.key;
-
-              server_name _;
-
-              location /page1/ {
-                  root /var/www;
-                  index index.html;
-              }
-
-              location /page2/ {
-                  root /var/www;
-                  index index.html;
-              }
-
-              location / {
-                  return 301 /page1/;
-              }
-          }
       notify: restart nginx
 
+    # Ensure nginx service is running and enabled on boot
     - name: Ensure nginx is enabled and running
       service:
         name: nginx
@@ -167,4 +151,4 @@
   hosts: localhost
   tasks:
     - debug:
-        msg: "Your EC2 instance is up and running at https://{{ hostvars['ec2_instance']['ansible_host'] }}/page1 and https://{{ hostvars['ec2_instance']['ansible_host'] }}/page2"
+        msg: "Your EC2 instance is running at https://{{ hostvars['ec2_instance']['ansible_host'] }}/page1 and https://{{ hostvars['ec2_instance']['ansible_host'] }}/page2"

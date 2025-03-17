@@ -1,0 +1,30 @@
+server {
+    listen 80 default_server;
+    listen [::]:80 default_server;
+
+    listen 443 ssl default_server;
+    listen [::]:443 ssl default_server;
+    ssl_certificate /etc/ssl/certs/nginx-selfsigned.crt;
+    ssl_certificate_key /etc/ssl/private/nginx-selfsigned.key;
+
+    server_name _;
+
+    # Redirect HTTP to HTTPS
+    if ($scheme = http) {
+        return 301 https://$host$request_uri;
+    }
+
+    location /page1/ {
+        root /var/www;
+        index index.html;
+    }
+
+    location /page2/ {
+        root /var/www;
+        index index.html;
+    }
+
+    location / {
+        return 301 /page1/;
+    }
+}
